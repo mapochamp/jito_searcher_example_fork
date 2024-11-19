@@ -50,8 +50,8 @@ pub enum BundleRejectionError {
     StateAuctionBidRejected(String, u64),
     #[error("bundle won state auction but failed global auction, auction {0}, tip {1} lamports")]
     WinningBatchBidRejected(String, u64),
-    #[error("bundle simulation failure on tx {0}, message: {1:?}")]
-    SimulationFailure(String, Option<String>),
+    #[error("bundle simulation failure on tx {0}, message: {1}")]
+    SimulationFailure(String, String),
     #[error("internal error {0}")]
     InternalError(String),
 }
