@@ -18,11 +18,15 @@ use jito_protos::{
 };
 use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use std::str::FromStr;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
-    signature::{Keypair, Signature},
-    transaction::VersionedTransaction,
+    pubkey::Pubkey,
+    signature::{Keypair, Signature, Signer},
+    system_instruction,
+    transaction::{Transaction, VersionedTransaction},
 };
+use jito_protos::shared::Header;
 use thiserror::Error;
 use tokio::time::timeout;
 use tonic::{

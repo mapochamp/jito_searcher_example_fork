@@ -26,10 +26,10 @@ use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use tokio::{sync::mpsc::Sender, time::sleep};
 use tonic::{
     codegen::{Body, Bytes, StdError},
+    Request,
 };
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AuctionStateWrapper {
     pub current_slot: u64,
     pub next_auction_slot: u64,
@@ -64,7 +64,7 @@ pub async fn auction_monitor_loop<T>(
     let mut errors: usize = 0;
     
     // Get available regions
-    match searcher_client.get_regions(GetRegionsRequest {}).await {
+    match searcher_client.get_regions(Request::new(GetRegionsRequest {})).await {
         Ok(response) => {
             let regions_resp = response.into_inner();
             info!(
@@ -83,7 +83,7 @@ pub async fn auction_monitor_loop<T>(
 
         // Get current auction state
         match searcher_client
-            .get_auction_state(GetAuctionStateRequest { regions: regions.clone() })
+            .get_auction_state(Request::new(GetAuctionStateRequest { regions: regions.clone() }))
             .await 
         {
             Ok(response) => {
@@ -256,7 +256,7 @@ pub async fn bundle_results_loop<T>(
     loop {
         sleep(Duration::from_millis(1000)).await;
         match searcher_client
-            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+            .subscribe_bundle_results(Request::new(SubscribeBundleResultsRequest {}))
             .await
         {
             Ok(resp) => {

@@ -1672,6 +1672,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12cb882ccb290b8646e554b157ab0b71e64e8d5bef775cd66b6531e52d302669"
 
 [[package]]
+name = "histogram"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e673d137229619d5c2c8903b6ed5852b43636c0017ff2e66b1aafb8ccf04b80b"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "hmac"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,11 +1952,12 @@ checksum = "b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c"
 name = "jito-backrun-example"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "clap 4.4.18",
  "env_logger 0.10.2",
  "futures-util",
- "histogram",
+ "histogram 0.7.4",
  "jito-protos",
  "jito-searcher-client",
  "log",
@@ -1955,11 +1966,10 @@ dependencies = [
  "solana-metrics",
  "solana-sdk",
  "solana-transaction-status",
- "spl-memo 3.0.1",
+ "spl-memo 4.0.0",
  "thiserror",
  "tokio",
  "tonic",
- "uuid",
 ]
 
 [[package]]
@@ -1986,7 +1996,7 @@ dependencies = [
  "crossbeam-channel",
  "env_logger 0.10.2",
  "futures-util",
- "histogram",
+ "histogram 0.6.9",
  "jito-protos",
  "jito-searcher-client",
  "log",
@@ -3975,7 +3985,7 @@ dependencies = [
  "bytes",
  "crossbeam-channel",
  "futures-util",
- "histogram",
+ "histogram 0.6.9",
  "indexmap 2.2.2",
  "itertools 0.10.5",
  "libc",
@@ -4965,15 +4975,6 @@ name = "utf8parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
-
-[[package]]
-name = "uuid"
-version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a183cf7feeba97b4dd1c0d46788634f6221d87fa961b305bed08c851829efcc0"
-dependencies = [
- "getrandom 0.2.12",
-]
 
 [[package]]
 name = "vec_map"
