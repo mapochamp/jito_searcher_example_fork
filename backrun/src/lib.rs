@@ -38,21 +38,34 @@ mod tests {
         let mut searcher_client = get_searcher_client_no_auth(&block_engine_url).await?;
         let rpc_client = RpcClient::new(rpc_url);
 
-        // Create test keypairs
-        let payer = Keypair::new();
+        // Load test keypair
+        info!("Attempting to load keypair from test_keypair.json");
+        let keypair_result = solana_sdk::signature::read_keypair_file("test_keypair.json");
+        
+        let payer = match keypair_result {
+            Ok(kp) => kp,
+            Err(e) => {
+                error!("Failed to read keypair file test_keypair.json");
+                error!("Current directory: {:?}", std::env::current_dir()?);
+                error!("Error details: {}", e);
+                error!("Please ensure test_keypair.json exists in the current directory");
+                return Err(anyhow::anyhow!("Keypair file error: {}", e));
+            }
+        };
         let recipient = Keypair::new();
 
-        info!("Created test keypairs:");
+        info!("Using keypairs:");
         info!("Payer: {}", payer.pubkey());
         info!("Recipient: {}", recipient.pubkey());
 
-        // Request airdrop for payer on testnet
-        info!("Requesting airdrop for payer...");
-        let airdrop_sig = rpc_client.request_airdrop(&payer.pubkey(), 1_000_000_000).await?;
-        rpc_client.confirm_transaction(&airdrop_sig).await?;
-        
+        // Check payer balance
         let balance = rpc_client.get_balance(&payer.pubkey()).await?;
         info!("Payer balance: {} SOL", balance as f64 / 1_000_000_000.0);
+
+        if balance == 0 {
+            error!("Payer account needs to be funded. Please fund {} with some testnet SOL", payer.pubkey());
+            return Ok(());
+        }
 
         // Get tip accounts from block engine
         info!("Fetching tip accounts...");
@@ -96,7 +109,7 @@ mod tests {
 
         // Convert transaction to packet
         let packet = Packet {
-            data: bincode::serialize(&tx)?.to_vec(),
+            data: bincode::serialize(&tx)?,
             meta: None,
         };
 
