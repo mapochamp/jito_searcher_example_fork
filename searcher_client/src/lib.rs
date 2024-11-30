@@ -56,6 +56,12 @@ pub enum BundleRejectionError {
     InternalError(String),
 }
 
+#[derive(Debug)]
+pub struct SendBundleOptions {
+    pub bundle_only: bool,
+    pub valid_until_slot: Option<u64>,
+}
+
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 
 pub async fn get_searcher_client_auth(
@@ -198,6 +204,33 @@ where
     Ok(())
 }
 
+pub async fn send_bundle_with_opts<T>(
+    searcher_client: &mut SearcherServiceClient<T>,
+    bundle: Bundle,
+    opts: SendBundleOptions,
+) -> Result<Response<SendBundleResponse>, Status>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
+    let mut bundle = bundle;
+    if let Some(header) = &mut bundle.header {
+        header.bundle_only = opts.bundle_only;
+        if let Some(slot) = opts.valid_until_slot {
+            header.valid_until_slot = slot;
+        }
+    }
+
+    searcher_client
+        .send_bundle(SendBundleRequest {
+            bundle: Some(bundle),
+        })
+        .await
+}
+
 pub async fn send_bundle_no_wait<T>(
     transactions: &[VersionedTransaction],
     searcher_client: &mut SearcherServiceClient<T>,
@@ -223,4 +256,78 @@ where
             }),
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_bundle_submission_testnet() -> Result<(), Box<dyn std::error::Error>> {
+        // Connect to testnet block engine
+        let block_engine_url = "https://dallas.testnet.block-engine.jito.wtf";
+        let client = get_searcher_client_no_auth(block_engine_url).await?;
+
+        // Create a test keypair
+        let payer = Keypair::new();
+
+        // Create a test transaction (just a simple transfer)
+        let transfer_ix = system_instruction::transfer(
+            &payer.pubkey(),
+            &Pubkey::new_unique(),
+            1_000_000, // 0.001 SOL
+        );
+
+        // Get tip accounts
+        let tip_accounts = vec![
+            "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+            "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+        ].iter()
+        .map(|s| Pubkey::from_str(s).unwrap())
+        .collect::<Vec<_>>();
+
+        // Create tip instruction (minimum 1000 lamports)
+        let tip_ix = system_instruction::transfer(
+            &payer.pubkey(),
+            &tip_accounts[0],
+            1_000,
+        );
+
+        // Combine transfer and tip in same transaction
+        let message = Message::new(
+            &[transfer_ix, tip_ix],
+            Some(&payer.pubkey()),
+        );
+
+        // Create and sign transaction
+        let mut tx = Transaction::new_unsigned(message);
+        // Note: In real usage, you'd get a recent blockhash from the network
+        tx.sign(&[&payer], tx.message.recent_blockhash);
+        let versioned_tx = VersionedTransaction::from(tx);
+
+        // Create bundle
+        let bundle = Bundle {
+            header: Some(Header {
+                bundle_only: true,
+                ..Default::default()
+            }),
+            packets: vec![proto_packet_from_versioned_tx(&versioned_tx)],
+        };
+
+        // Submit bundle with options
+        let opts = SendBundleOptions {
+            bundle_only: true,
+            valid_until_slot: None, // Let it use default
+        };
+
+        let mut client = client;
+        let result = send_bundle_with_opts(&mut client, bundle, opts).await?;
+        println!("Bundle submission result: {:?}", result);
+
+        Ok(())
+    }
 }

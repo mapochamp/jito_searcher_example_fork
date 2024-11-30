@@ -1,68 +1,1910 @@
 mod event_loops;
 
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     path::PathBuf,
     result,
     str::FromStr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 
 use clap::Parser;
 use env_logger::TimestampPrecision;
 use histogram::Histogram;
 use jito_protos::{
-    bundle::BundleResult,
-    convert::versioned_tx_from_packet,
+    bundle::{Bundle, BundleResult, bundle_result::Result as BundleResultEnum, rejected::Reason}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     searcher::{
-        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-        NextScheduledLeaderRequest, PendingTxNotification, SendBundleResponse,
-    },
+        searcher_service_client::SearcherServiceClient,
+        ConnectedLeadersRequest, SendBundleResponse, NextScheduledLeaderRequest,
+    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
+    shared::Header,
+    packet::Packet,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 use jito_searcher_client::{
-    get_searcher_client_auth, get_searcher_client_no_auth, send_bundle_no_wait,
-    BlockEngineConnectionError,
+    get_searcher_client_auth, get_searcher_client_no_auth,
+    BlockEngineConnectionError, SendBundleOptions,
+    send_bundle_with_opts,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 use log::*;
-use rand::{rngs::ThreadRng, thread_rng, Rng};
+use rand::{thread_rng, Rng}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+};
 use solana_client::{
     client_error::ClientError,
-    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient},
+    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     rpc_response,
     rpc_response::RpcBlockUpdate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
-use solana_metrics::{datapoint_info, set_host_id};
+use solana_metrics::{datapoint_info, set_host_id}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+};
 use solana_sdk::{
     clock::Slot,
-    commitment_config::{CommitmentConfig, CommitmentLevel},
+    commitment_config::{CommitmentConfig, CommitmentLevel}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     hash::Hash,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signature, Signer},
+    signature::{read_keypair_file, Keypair, Signature, Signer}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     system_instruction::transfer,
-    transaction::{Transaction, VersionedTransaction},
+    transaction::{Transaction, VersionedTransaction}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 use spl_memo::build_memo;
 use thiserror::Error;
 use tokio::{
     runtime::Builder,
-    sync::mpsc::{channel, Receiver},
+    sync::mpsc::{channel, Receiver}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     time::interval,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 use tonic::{
-    codegen::{Body, Bytes, StdError},
+    codegen::{Body, Bytes, StdError}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
     Response, Status,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 
 use crate::event_loops::{
-    block_subscribe_loop, bundle_results_loop, pending_tx_loop, slot_subscribe_loop,
+    block_subscribe_loop, bundle_results_loop, auction_monitor_loop, 
+    slot_subscribe_loop, AuctionStateWrapper,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 };
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// URL of the block engine.
-    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
     block_engine_url: String,
 
@@ -75,13 +1917,10 @@ struct Args {
     payer_keypair: PathBuf,
 
     /// Path to keypair file used to authenticate with the Jito Block Engine
-    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
     #[arg(long, env)]
     auth_keypair: Option<PathBuf>,
 
     /// RPC Websocket URL.
-    /// See: https://solana.com/docs/rpc/websocket
-    /// Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
     #[arg(long, env)]
     pubsub_url: String,
 
@@ -93,15 +1932,23 @@ struct Args {
     #[arg(long, env, default_value = "jito backrun")]
     message: String,
 
-    /// Tip payment program public key
-    /// See: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
-    #[arg(long, env)]
-    tip_program_id: Pubkey,
+    /// Minimum tip amount in lamports
+    #[arg(long, env, default_value = "100000")]
+    min_tip_amount: u64,
+    
+    /// Maximum tip amount in lamports
+    #[arg(long, env, default_value = "1000000")]
+    max_tip_amount: u64,
+    
+    /// Number of slots to look ahead for auctions
+    #[arg(long, env, default_value = "2")]
+    auction_lookahead_slots: u64,
+
+    /// Region to connect to (amsterdam, frankfurt, ny, tokyo, slc)
+    #[arg(long, env, default_value = "amsterdam")]
+    region: String,
 
     /// Comma-separated list of regions to request cross-region data from.
-    /// If no region specified, then default to the currently connected block engine's region.
-    /// Details: https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region
-    /// Available regions: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env, value_delimiter = ',')]
     regions: Vec<String>,
 
@@ -110,119 +1957,1469 @@ struct Args {
     subscribe_bundle_results: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 enum BackrunError {
-    #[error("TonicError {0}")]
+    #[error("TonicError {0}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}")]
     TonicError(#[from] tonic::transport::Error),
-    #[error("GrpcError {0}")]
+    #[error("GrpcError {0}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}")]
     GrpcError(#[from] Status),
-    #[error("RpcError {0}")]
+    #[error("RpcError {0}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}")]
     RpcError(#[from] ClientError),
-    #[error("PubSubError {0}")]
+    #[error("PubSubError {0}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}")]
     PubSubError(#[from] PubsubClientError),
-    #[error("BlockEngineConnectionError {0}")]
+    #[error("BlockEngineConnectionError {0}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}")]
     BlockEngineConnectionError(#[from] BlockEngineConnectionError),
     #[error("Shutdown")]
     Shutdown,
 }
 
-#[derive(Clone)]
-struct BundledTransactions {
-    mempool_txs: Vec<VersionedTransaction>,
-    backrun_txs: Vec<VersionedTransaction>,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct AuctionBundle {
+    transactions: Vec<VersionedTransaction>,
+    tip_amount: u64,
+    target_slot: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 }
 
 #[derive(Default)]
 struct BlockStats {
-    bundles_sent: Vec<(
-        BundledTransactions,
-        tonic::Result<Response<SendBundleResponse>>,
-    )>,
+    bundles_sent: Vec<(AuctionBundle, tonic::Result<Response<SendBundleResponse>>)>,
     send_elapsed: u64,
     send_rt_per_packet: Histogram,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
 type Result<T> = result::Result<T, BackrunError>;
 
-fn build_bundles(
-    pending_tx_notification: PendingTxNotification,
-    keypair: &Keypair,
-    blockhash: &Hash,
-    tip_accounts: &[Pubkey],
-    rng: &mut ThreadRng,
-    message: &str,
-) -> Vec<BundledTransactions> {
-    pending_tx_notification
-        .transactions
-        .into_iter()
-        .filter_map(|packet| {
-            let mempool_tx = versioned_tx_from_packet(&packet)?;
-            let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
-
-            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &[
-                    build_memo(
-                        format!("{}: {:?}", message, mempool_tx.signatures[0].to_string())
-                            .as_bytes(),
-                        &[],
-                    ),
-                    transfer(&keypair.pubkey(), &tip_account, 10_000),
-                ],
-                Some(&keypair.pubkey()),
-                &[keypair],
-                *blockhash,
-            ));
-            Some(BundledTransactions {
-                mempool_txs: vec![mempool_tx],
-                backrun_txs: vec![backrun_tx],
-            })
-        })
-        .collect()
+fn generate_tip_accounts() -> Vec<Pubkey> {
+    vec![
+        "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+        "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe", 
+        "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+        "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+        "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+        "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+        "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL", 
+        "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"
+    ].iter()
+    .map(|s| Pubkey::from_str(s).unwrap())
+    .collect()
 }
 
-async fn send_bundles<T>(
-    searcher_client: &mut SearcherServiceClient<T>,
-    bundles: &[BundledTransactions],
-) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>>
-where
-    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
-{
-    let mut futs = Vec::with_capacity(bundles.len());
-    for b in bundles {
-        let mut searcher_client = searcher_client.clone();
-        let txs = b
-            .mempool_txs
-            .clone()
-            .into_iter()
-            .chain(b.backrun_txs.clone().into_iter())
-            .collect::<Vec<VersionedTransaction>>();
-        let task =
-            tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
-        futs.push(task);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
+async fn prepare_auction_bundle(
+    transactions: Vec<VersionedTransaction>,
+    tip_amount: u64,
+    tip_account: &Pubkey,
+    payer: &Keypair,
+    blockhash: Hash,
+) -> Result<Bundle> {
+    let tip_tx = Transaction::new_signed_with_payer(
+        &[
+            transfer(&payer.pubkey(), tip_account, tip_amount),
+            build_memo(format!("jito tip: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}", tip_amount).as_bytes(), &[]),
+        ],
+        Some(&payer.pubkey()),
+        &[payer],
+        blockhash,
+    );
+
+    let packets = transactions.iter()
+        .chain(std::iter::once(&VersionedTransaction::from(tip_tx)))
+        .map(|tx| {
+            let mut packet = Packet::default();
+            packet.data = bincode::serialize(tx).unwrap();
+            packet.meta = Some(Default::default());
+            packet
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
+        .collect();
+
+    Ok(Bundle {
+        header: Some(Header {
+            bundle_only: true,
+            ..Default::default()
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}),
+        packets,
     }
 
-    let responses = futures_util::future::join_all(futs).await;
-    let send_bundle_responses = responses.into_iter().map(|r| r.unwrap()).collect();
-    Ok(send_bundle_responses)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
 }
 
-fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
-    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], tip_program_pubkey).0;
-    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], tip_program_pubkey).0;
-    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], tip_program_pubkey).0;
-    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], tip_program_pubkey).0;
-    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], tip_program_pubkey).0;
-    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], tip_program_pubkey).0;
-    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], tip_program_pubkey).0;
-    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], tip_program_pubkey).0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
 
-    vec![
-        tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
-    ]
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 }
 
 async fn maintenance_tick<T>(
@@ -242,11 +3439,195 @@ where
     *blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
             commitment: CommitmentLevel::Confirmed,
-        })
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
         .await?
         .0;
     let new_leader_schedule = searcher_client
-        .get_connected_leaders(ConnectedLeadersRequest {})
+        .get_connected_leaders(ConnectedLeadersRequest {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
         .await?
         .into_inner()
         .connected_validators
@@ -257,24 +3638,760 @@ where
                 slot_list.slots.iter().cloned().collect(),
             );
             hmap
-        });
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+});
     if new_leader_schedule != *leader_schedule {
-        info!("connected_validators: {:?}", new_leader_schedule.keys());
+        info!("connected_validators: {:?}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}", new_leader_schedule.keys());
         *leader_schedule = new_leader_schedule;
     }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
     let next_scheduled_leader = searcher_client
-        .get_next_scheduled_leader(NextScheduledLeaderRequest { regions })
+        .get_next_scheduled_leader(NextScheduledLeaderRequest { regions }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
         .await?
         .into_inner();
     info!(
-        "next_scheduled_leader: {} in {} slots from {}",
+        "next_scheduled_leader: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} in {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} slots from {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}",
         next_scheduled_leader.next_leader_identity,
         next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot,
         next_scheduled_leader.next_leader_region
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 }
 
 fn print_block_stats(
@@ -333,6 +4450,98 @@ fn print_block_stats(
         );
     }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
     let maybe_leader = leader_schedule
         .iter()
         .find(|(_, slots)| slots.contains(&block.context.slot))
@@ -340,33 +4549,24 @@ fn print_block_stats(
 
     if let Some(b) = &block.value.block {
         if let Some(sigs) = &b.signatures {
-            let block_signatures: HashSet<Signature> = sigs
+            let block_signatures_set: HashSet<Signature> = sigs
                 .iter()
                 .map(|s| Signature::from_str(s).unwrap())
                 .collect();
 
-            // bundles that were sent before or during this slot
-            #[allow(clippy::type_complexity)]
-            let bundles_sent_before_slot: HashMap<
-                Slot,
-                &[(
-                    BundledTransactions,
-                    tonic::Result<Response<SendBundleResponse>>,
-                )],
-            > = block_stats
-                .iter()
-                .filter(|(slot, _)| **slot <= block.context.slot)
-                .map(|(slot, stats)| (*slot, stats.bundles_sent.as_ref()))
-                .collect();
-
             if let Some(leader) = maybe_leader {
-                // number of bundles sent before or during this slot
+                let bundles_sent_before_slot: HashMap<Slot, &[(AuctionBundle, tonic::Result<Response<SendBundleResponse>>)]> = 
+                    block_stats
+                        .iter()
+                        .filter(|(slot, _)| **slot <= block.context.slot)
+                        .map(|(slot, stats)| (*slot, stats.bundles_sent.as_slice()))
+                        .collect();
+
                 let num_bundles_sent: usize = bundles_sent_before_slot
                     .values()
                     .map(|bundles_sent| bundles_sent.len())
                     .sum();
 
-                // number of bundles where sending returned ok
                 let num_bundles_sent_ok: usize = bundles_sent_before_slot
                     .values()
                     .map(|bundles_sent| {
@@ -374,73 +4574,106 @@ fn print_block_stats(
                             .iter()
                             .filter(|(_, send_response)| send_response.is_ok())
                             .count()
-                    })
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
                     .sum();
-
-                // a list of all bundles landed this slot that were sent before or during this slot
-                let bundles_landed: Vec<(Slot, &BundledTransactions)> = bundles_sent_before_slot
-                    .iter()
-                    .flat_map(|(slot, bundles_sent_slot)| {
-                        bundles_sent_slot
-                            .iter()
-                            .filter(|(_, send_response)| send_response.is_ok())
-                            .filter_map(|(bundle_sent, _)| {
-                                if bundle_sent
-                                    .backrun_txs
-                                    .iter()
-                                    .chain(bundle_sent.mempool_txs.iter())
-                                    .all(|tx| block_signatures.contains(&tx.signatures[0]))
-                                {
-                                    Some((*slot, bundle_sent))
-                                } else {
-                                    None
-                                }
-                            })
-                    })
-                    .collect();
-
-                let mempool_txs_landed_no_bundle: Vec<(Slot, &BundledTransactions)> =
-                    bundles_sent_before_slot
-                        .iter()
-                        .flat_map(|(slot, bundles_sent_slot)| {
-                            bundles_sent_slot
-                                .iter()
-                                .filter(|(_, send_response)| send_response.is_ok())
-                                .filter_map(|(bundle_sent, _)| {
-                                    if bundle_sent
-                                        .mempool_txs
-                                        .iter()
-                                        .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                                        && !bundle_sent
-                                            .backrun_txs
-                                            .iter()
-                                            .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                                    {
-                                        Some((*slot, bundle_sent))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        })
-                        .collect();
-
-                // find the min and max distance from when the bundle was sent to what block it landed in
-                let min_bundle_send_slot = bundles_landed
-                    .iter()
-                    .map(|(slot, _)| *slot)
-                    .min()
-                    .unwrap_or(0);
-                let max_bundle_send_slot = bundles_landed
-                    .iter()
-                    .map(|(slot, _)| *slot)
-                    .max()
-                    .unwrap_or(0);
 
                 datapoint_info!(
                     "leader-bundle-stats",
                     ("slot", block.context.slot, i64),
                     ("leader", leader.to_string(), String),
-                    ("block_txs", block_signatures.len(), i64),
+                    ("block_txs", block_signatures_set.len(), i64),
                     ("num_bundles_sent", num_bundles_sent, i64),
                     ("num_bundles_sent_ok", num_bundles_sent_ok, i64),
                     (
@@ -448,53 +4681,382 @@ fn print_block_stats(
                         num_bundles_sent - num_bundles_sent_ok,
                         i64
                     ),
-                    ("num_bundles_landed", bundles_landed.len(), i64),
-                    (
-                        "num_bundles_dropped",
-                        num_bundles_sent - bundles_landed.len(),
-                        i64
-                    ),
-                    ("min_bundle_send_slot", min_bundle_send_slot, i64),
-                    ("max_bundle_send_slot", max_bundle_send_slot, i64),
-                    (
-                        "mempool_txs_landed_no_bundle",
-                        mempool_txs_landed_no_bundle.len(),
-                        i64
-                    ),
                 );
 
-                // leaders last slot, clear everything out
-                // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
-                // close to each other
                 if block.context.slot % 4 == 3 {
                     block_stats.clear();
                 }
-            } else {
-                // figure out how many transactions in bundles landed in slots other than our leader
-                let num_mempool_txs_landed: usize = bundles_sent_before_slot
-                    .values()
-                    .map(|bundles| {
-                        bundles
-                            .iter()
-                            .filter(|(bundle, _)| {
-                                bundle
-                                    .mempool_txs
-                                    .iter()
-                                    .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                            })
-                            .count()
-                    })
-                    .sum();
-                if num_mempool_txs_landed > 0 {
-                    datapoint_info!(
-                        "non-leader-bundle-stats",
-                        ("slot", block.context.slot, i64),
-                        ("mempool_txs_landed", num_mempool_txs_landed, i64),
-                    );
-                }
-            }
-        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
     }
+}
+            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
 
     if let Some(b) = &block.value.block {
         if let Some(sigs) = &b.signatures {
@@ -505,10 +5067,285 @@ fn print_block_stats(
                     .collect(),
             );
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
     }
 
-    // throw away signatures for slots > KEEP_SIGS_SLOTS old
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
     block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,12 +5354,12 @@ async fn run_searcher_loop<T>(
     keypair: &Keypair,
     rpc_url: String,
     regions: Vec<String>,
-    message: String,
-    tip_program_pubkey: Pubkey,
+    min_tip_amount: u64,
+    max_tip_amount: u64,
     mut slot_receiver: Receiver<Slot>,
     mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
     mut bundle_results_receiver: Receiver<BundleResult>,
-    mut pending_tx_receiver: Receiver<PendingTxNotification>,
+    mut auction_receiver: Receiver<AuctionStateWrapper>,
 ) -> Result<()>
 where
     T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
@@ -534,22 +5371,204 @@ where
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
+    let mut _highest_slot = 0;  // Mark as unused since we're not using it yet
+    let mut _is_leader_slot = false;  // Mark as unused since we're not using it yet
 
     let mut rng = thread_rng();
+    let tip_accounts = generate_tip_accounts();
+    info!("tip accounts: {:?}
 
-    let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
-    info!("tip accounts: {:?}", tip_accounts);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}", tip_accounts);
 
     let rpc_client = RpcClient::new(rpc_url);
     let mut blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
             commitment: CommitmentLevel::Confirmed,
-        })
+        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
         .await?
         .0;
-
-    let mut highest_slot = 0;
-    let mut is_leader_slot = false;
 
     let mut tick = interval(Duration::from_secs(5));
     loop {
@@ -557,51 +5576,4819 @@ where
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash, regions.clone()).await?;
             }
-            maybe_bundle_result = bundle_results_receiver.recv() => {
-                let bundle_result: BundleResult = maybe_bundle_result.ok_or(BackrunError::Shutdown)?;
-                info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
-            }
-            maybe_pending_tx_notification = pending_tx_receiver.recv() => {
-                // block engine starts forwarding a few slots early, for super high activity accounts
-                // it might be ideal to wait until the leader slot is up
-                if is_leader_slot {
-                    let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
-                    let bundles = build_bundles(pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message);
-                    if !bundles.is_empty() {
-                        let now = Instant::now();
-                        let results = send_bundles(&mut searcher_client, &bundles).await?;
-                        let send_elapsed = now.elapsed().as_micros() as u64;
-                        let send_rt_pp_us = send_elapsed / bundles.len() as u64;
 
-                        match block_stats.entry(highest_slot) {
-                            Entry::Occupied(mut entry) => {
-                                let stats = entry.get_mut();
-                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
-                                stats.send_elapsed += send_elapsed;
-                                let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+            Some(bundle_result) = bundle_results_receiver.recv() => {
+                match &bundle_result.result {
+                    Some(BundleResultEnum::Rejected(rejected)) => {
+                        match &rejected.reason {
+                            Some(Reason::StateAuctionBidRejected(r)) => {
+                                warn!(
+                                    "Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} rejected from state auction: need {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} lamports",
+                                    bundle_result.bundle_id, r.simulated_bid_lamports
+                                );
                             }
-                            Entry::Vacant(entry) => {
-                                let mut send_rt_per_packet = Histogram::new();
-                                let _ = send_rt_per_packet.increment(send_rt_pp_us);
-                                entry.insert(BlockStats {
-                                    bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
-                                    send_elapsed,
-                                    send_rt_per_packet
-                                });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                            Some(Reason::WinningBatchBidRejected(r)) => {
+                                warn!(
+                                    "Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} won state auction but rejected from batch {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} lamports",
+                                    bundle_result.bundle_id, r.auction_id, r.simulated_bid_lamports
+                                );
                             }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                            Some(Reason::SimulationFailure(r)) => {
+                                error!(
+                                    "Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} failed simulation at tx {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}",
+                                    bundle_result.bundle_id, r.tx_signature, r.msg
+                                );
+                            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                            Some(Reason::DroppedBundle(r)) => {
+                                warn!("Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} dropped: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}", bundle_result.bundle_id, r.msg);
+                            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                            _ => {
+                                error!("Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} rejected with unknown reason", bundle_result.bundle_id);
+                            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
                         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
                     }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                    Some(BundleResultEnum::Accepted(accepted)) => {
+                        info!(
+                            "Bundle accepted for slot {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} by validator {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}",
+                            accepted.slot, accepted.validator_identity
+                        );
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                    Some(BundleResultEnum::Processed(processed)) => {
+                        info!(
+                            "Bundle processed in slot {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} by {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} at index {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}",
+                            processed.slot, processed.validator_identity, processed.bundle_index
+                        );
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                    Some(BundleResultEnum::Finalized(_)) => {
+                        info!("Bundle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} finalized", bundle_result.bundle_id);
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                    _ => {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
                 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
             }
-            maybe_slot = slot_receiver.recv() => {
-                highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
-                is_leader_slot = leader_schedule.iter().any(|(_, slots)| slots.contains(&highest_slot));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+            Some(auction_state) = auction_receiver.recv() => {
+                let tip_amount = auction_state.min_bid_lamports.max(min_tip_amount)
+                    .min(max_tip_amount);
+                
+                let tip_account = if !auction_state.tip_accounts.is_empty() {
+                    Pubkey::from_str(&auction_state.tip_accounts[rng.gen_range(0..auction_state.tip_accounts.len())])
+                        .unwrap()
+                }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+} else {
+                    tip_accounts[rng.gen_range(0..tip_accounts.len())]
+                }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+};
+                
+                if let Ok(bundle) = prepare_auction_bundle(
+                    vec![],
+                    tip_amount,
+                    &tip_account,
+                    keypair,
+                    blockhash,
+                ).await {
+                    let now = Instant::now();
+                    let opts = SendBundleOptions {
+                        bundle_only: true,
+                        valid_until_slot: Some(auction_state.next_auction_slot + 1),
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+};
+                    
+                    match send_bundle_with_opts(&mut searcher_client, bundle, opts).await {
+                        Ok(response) => {
+                            let send_elapsed = now.elapsed().as_micros() as u64;
+                            match block_stats.entry(auction_state.next_auction_slot) {
+                                Entry::Occupied(mut entry) => {
+                                    let stats = entry.get_mut();
+                                    stats.bundles_sent.push((
+                                        AuctionBundle {
+                                            transactions: vec![],
+                                            tip_amount,
+                                            target_slot: auction_state.next_auction_slot,
+                                        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
+                                        Ok(response),
+                                    ));
+                                    stats.send_elapsed += send_elapsed;
+                                    let _ = stats.send_rt_per_packet.increment(send_elapsed);
+                                }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                                Entry::Vacant(entry) => {
+                                    let mut send_rt_per_packet = Histogram::new();
+                                    let _ = send_rt_per_packet.increment(send_elapsed);
+                                    entry.insert(BlockStats {
+                                        bundles_sent: vec![(
+                                            AuctionBundle {
+                                                transactions: vec![],
+                                                tip_amount,
+                                                target_slot: auction_state.next_auction_slot,
+                                            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+},
+                                            Ok(response),
+                                        )],
+                                        send_elapsed,
+                                        send_rt_per_packet,
+                                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+});
+                                }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                        Err(e) => {
+                            error!("Failed to submit to auction: {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}", e);
+                        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+                }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
             }
-            maybe_block = block_receiver.recv() => {
-                let block = maybe_block.ok_or(BackrunError::Shutdown)?;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+            Some(slot) = slot_receiver.recv() => {
+                _highest_slot = slot;
+                _is_leader_slot = leader_schedule.iter().any(|(_, slots)| slots.contains(&_highest_slot));
+            }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+            Some(block) = block_receiver.recv() => {
                 print_block_stats(&mut block_stats, block, &leader_schedule, &mut block_signatures);
             }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
     }
 }
 
@@ -636,6 +10423,98 @@ fn main() -> Result<()> {
             .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
             start_searcher_loop(runtime, searcher_client_auth, &payer_keypair, args)
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
         None => {
             let searcher_client_no_auth = runtime.block_on(
                 get_searcher_client_no_auth(
@@ -644,6 +10523,282 @@ fn main() -> Result<()> {
                 .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
             start_searcher_loop(runtime, searcher_client_no_auth, &payer_keypair, args)
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
     }
 }
 
@@ -665,14 +10820,14 @@ where
         let (slot_sender, slot_receiver) = channel(100);
         let (block_sender, block_receiver) = channel(100);
         let (bundle_results_sender, bundle_results_receiver) = channel(100);
-        let (pending_tx_sender, pending_tx_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
 
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
         tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
-        tokio::spawn(pending_tx_loop(
+        tokio::spawn(auction_monitor_loop(
             searcher_client.clone(),
-            pending_tx_sender,
-            args.backrun_accounts,
+            auction_sender,
+            args.regions.clone(),
         ));
 
         if args.subscribe_bundle_results {
@@ -682,21 +10837,389 @@ where
             ));
         }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+}
+
         let result = run_searcher_loop(
             searcher_client,
             payer_keypair,
             args.rpc_url,
             args.regions,
-            args.message,
-            args.tip_program_id,
+            args.min_tip_amount,
+            args.max_tip_amount,
             slot_receiver,
             block_receiver,
             bundle_results_receiver,
-            pending_tx_receiver,
+            auction_receiver,
         )
         .await;
-        error!("searcher loop exited result: {result:?}");
+        error!("searcher loop exited result: {result:?}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
 
         Ok(())
-    })
+    }
+}");
+
+        Ok(())
+    }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
+})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        message::Message,
+        system_program,
+    };
+
+    #[tokio::test]
+    async fn test_searcher_testnet() -> Result<()> {
+        // Setup test parameters
+        let args = Args {
+            block_engine_url: "https://dallas.testnet.block-engine.jito.wtf".to_string(),
+            backrun_accounts: vec![], // No specific accounts to backrun for this test
+            payer_keypair: PathBuf::from("test_keypair.json"), // We'll create this
+            auth_keypair: None, // No auth needed for testnet
+            pubsub_url: "wss://api.testnet.solana.com".to_string(),
+            rpc_url: "https://api.testnet.solana.com".to_string(),
+            message: "test backrun".to_string(),
+            min_tip_amount: 1_000,
+            max_tip_amount: 100_000,
+            auction_lookahead_slots: 2,
+            region: "dallas".to_string(),
+            regions: vec!["dallas".to_string()],
+            subscribe_bundle_results: true,
+        };
+
+        // Create a test keypair
+        let payer = Keypair::new();
+        // Save it for the test
+        std::fs::write(
+            "test_keypair.json",
+            serde_json::to_string(&Vec::from(payer.to_bytes()))?,
+        )?;
+
+        // Request some test SOL (in real usage, you'd need to fund this account)
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        println!("Fund this address for test: {}", payer.pubkey());
+
+        // Connect to block engine
+        let searcher_client = get_searcher_client_no_auth(&args.block_engine_url).await?;
+
+        // Create channels
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
+        let (auction_sender, auction_receiver) = channel(100);
+
+        // Start the event loops
+        let slot_handle = tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        let block_handle = tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        let auction_handle = tokio::spawn(auction_monitor_loop(
+            searcher_client.clone(),
+            auction_sender,
+            args.regions.clone(),
+        ));
+        let bundle_results_handle = tokio::spawn(bundle_results_loop(
+            searcher_client.clone(),
+            bundle_results_sender,
+        ));
+
+        // Run the searcher loop for a short time
+        let searcher_handle = tokio::spawn(run_searcher_loop(
+            searcher_client,
+            &Arc::new(payer),
+            args.rpc_url,
+            args.regions,
+            args.min_tip_amount,
+            args.max_tip_amount,
+            slot_receiver,
+            block_receiver,
+            bundle_results_receiver,
+            auction_receiver,
+        ));
+
+        // Let it run for 30 seconds
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Clean up
+        slot_handle.abort();
+        block_handle.abort();
+        auction_handle.abort();
+        bundle_results_handle.abort();
+        searcher_handle.abort();
+
+        // Clean up test keypair file
+        std::fs::remove_file("test_keypair.json")?;
+
+        Ok(())
+    }
 }

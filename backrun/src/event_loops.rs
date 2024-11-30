@@ -4,11 +4,13 @@ use futures_util::StreamExt;
 use jito_protos::{
     bundle::BundleResult,
     searcher::{
-        mempool_subscription, searcher_service_client::SearcherServiceClient, MempoolSubscription,
-        PendingTxNotification, SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
+        searcher_service_client::SearcherServiceClient,
+        SubscribeBundleResultsRequest,
+        GetRegionsRequest, GetAuctionStateRequest,
+        AuctionState,
     },
 };
-use log::info;
+use log::*;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -19,14 +21,111 @@ use solana_metrics::{datapoint_error, datapoint_info};
 use solana_sdk::{
     clock::Slot,
     commitment_config::{CommitmentConfig, CommitmentLevel},
-    pubkey::Pubkey,
 };
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use tokio::{sync::mpsc::Sender, time::sleep};
 use tonic::{
     codegen::{Body, Bytes, StdError},
-    Streaming,
 };
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AuctionStateWrapper {
+    pub current_slot: u64,
+    pub next_auction_slot: u64,
+    pub min_bid_lamports: u64,
+    pub tip_accounts: Vec<String>,
+    pub region: String,
+}
+
+impl From<AuctionState> for AuctionStateWrapper {
+    fn from(state: AuctionState) -> Self {
+        Self {
+            current_slot: state.current_slot,
+            next_auction_slot: state.next_auction_slot,
+            min_bid_lamports: state.min_bid_lamports,
+            tip_accounts: state.tip_accounts,
+            region: state.region,
+        }
+    }
+}
+
+pub async fn auction_monitor_loop<T>(
+    mut searcher_client: SearcherServiceClient<T>,
+    auction_sender: Sender<AuctionStateWrapper>,
+    regions: Vec<String>,
+) where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
+    let mut errors: usize = 0;
+    
+    // Get available regions
+    match searcher_client.get_regions(GetRegionsRequest {}).await {
+        Ok(response) => {
+            let regions_resp = response.into_inner();
+            info!(
+                "Connected to region: {}, Available regions: {:?}",
+                regions_resp.current_region,
+                regions_resp.available_regions
+            );
+        }
+        Err(e) => {
+            error!("Failed to get regions: {}", e);
+        }
+    }
+
+    loop {
+        sleep(Duration::from_millis(200)).await; // More frequent checks for auctions
+
+        // Get current auction state
+        match searcher_client
+            .get_auction_state(GetAuctionStateRequest { regions: regions.clone() })
+            .await 
+        {
+            Ok(response) => {
+                let auction_state = response.into_inner().state;
+                if auction_state.is_none() {
+                    continue;
+                }
+                let auction_state = auction_state.unwrap();
+                
+                let slots_until_next = auction_state.next_auction_slot - auction_state.current_slot;
+                
+                // If we're within 2 slots of the next auction, prepare
+                if slots_until_next <= 2 {
+                    info!(
+                        "Preparing for auction: slot {}, min bid {} lamports, region {}",
+                        auction_state.next_auction_slot,
+                        auction_state.min_bid_lamports,
+                        auction_state.region,
+                    );
+                    
+                    if let Err(e) = auction_sender.send(auction_state.into()).await {
+                        error!("Failed to send auction state: {}", e);
+                        datapoint_error!(
+                            "auction_send_error",
+                            ("errors", 1, i64),
+                            ("error_str", e.to_string(), String)
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                datapoint_error!(
+                    "auction_monitor_error",
+                    ("errors", errors, i64),
+                    ("error_str", e.to_string(), String)
+                );
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {
@@ -77,8 +176,6 @@ pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>)
 }
 
 // block subscription loop that attempts to maintain a connection to an RPC server
-// NOTE: you must have --rpc-pubsub-enable-block-subscription and relevant flags started
-// on your RPC servers for this to work.
 pub async fn block_subscribe_loop(
     pubsub_addr: String,
     block_receiver: Sender<rpc_response::Response<RpcBlockUpdate>>,
@@ -144,78 +241,6 @@ pub async fn block_subscribe_loop(
     }
 }
 
-// attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
-pub async fn pending_tx_loop<T>(
-    mut searcher_client: SearcherServiceClient<T>,
-    pending_tx_sender: Sender<PendingTxNotification>,
-    backrun_pubkeys: Vec<Pubkey>,
-) where
-    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
-{
-    let _num_searcher_connection_errors: usize = 0;
-    let mut num_pending_tx_sub_errors: usize = 0;
-    let mut num_pending_tx_stream_errors: usize = 0;
-    let mut num_pending_tx_stream_disconnects: usize = 0;
-
-    info!("backrun pubkeys: {:?}", backrun_pubkeys);
-
-    loop {
-        sleep(Duration::from_secs(1)).await;
-
-        match searcher_client
-            .subscribe_mempool(MempoolSubscription {
-                regions: vec![],
-                msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                    WriteLockedAccountSubscriptionV0 {
-                        accounts: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
-                    },
-                )),
-            })
-            .await
-        {
-            Ok(pending_tx_stream_response) => {
-                let mut pending_tx_stream = pending_tx_stream_response.into_inner();
-                while let Some(maybe_notification) = pending_tx_stream.next().await {
-                    match maybe_notification {
-                        Ok(notification) => {
-                            if pending_tx_sender.send(notification).await.is_err() {
-                                datapoint_error!("pending_tx_send_error", ("errors", 1, i64));
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            num_pending_tx_stream_errors += 1;
-                            datapoint_error!(
-                                "searcher_pending_tx_stream_error",
-                                ("errors", num_pending_tx_stream_errors, i64),
-                                ("error_str", e.to_string(), String)
-                            );
-                            break;
-                        }
-                    }
-                }
-                num_pending_tx_stream_disconnects += 1;
-                datapoint_error!(
-                    "searcher_pending_tx_stream_disconnect",
-                    ("errors", num_pending_tx_stream_disconnects, i64),
-                );
-            }
-            Err(e) => {
-                num_pending_tx_sub_errors += 1;
-                datapoint_error!(
-                    "searcher_pending_tx_sub_error",
-                    ("errors", num_pending_tx_sub_errors, i64),
-                    ("error_str", e.to_string(), String)
-                );
-            }
-        }
-    }
-}
-
 pub async fn bundle_results_loop<T>(
     mut searcher_client: SearcherServiceClient<T>,
     bundle_results_sender: Sender<BundleResult>,
@@ -226,8 +251,7 @@ pub async fn bundle_results_loop<T>(
     <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
 {
-    let _connection_errors: usize = 0;
-    let mut response_errors: usize = 0;
+    let mut errors: usize = 0;
 
     loop {
         sleep(Duration::from_millis(1000)).await;
@@ -236,43 +260,34 @@ pub async fn bundle_results_loop<T>(
             .await
         {
             Ok(resp) => {
-                consume_bundle_results_stream(resp.into_inner(), &bundle_results_sender).await;
-            }
-            Err(e) => {
-                response_errors += 1;
-                datapoint_error!(
-                    "searcher_bundle_results_error",
-                    ("errors", response_errors, i64),
-                    ("msg", e.to_string(), String)
-                );
-            }
-        }
-    }
-}
-
-pub async fn consume_bundle_results_stream(
-    mut stream: Streaming<BundleResult>,
-    bundle_results_sender: &Sender<BundleResult>,
-) {
-    while let Some(maybe_msg) = stream.next().await {
-        match maybe_msg {
-            Ok(msg) => {
-                if let Err(e) = bundle_results_sender.send(msg).await {
-                    datapoint_error!(
-                        "searcher_bundle_results_error",
-                        ("errors", 1, i64),
-                        ("msg", e.to_string(), String)
-                    );
-                    return;
+                let mut stream = resp.into_inner();
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(bundle_result) => {
+                            if bundle_results_sender.send(bundle_result).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            datapoint_error!(
+                                "bundle_results_error",
+                                ("errors", errors, i64),
+                                ("error_str", e.to_string(), String)
+                            );
+                            break;
+                        }
+                    }
                 }
             }
             Err(e) => {
+                errors += 1;
                 datapoint_error!(
-                    "searcher_bundle_results_error",
-                    ("errors", 1, i64),
-                    ("msg", e.to_string(), String)
+                    "bundle_results_subscription_error",
+                    ("errors", errors, i64),
+                    ("error_str", e.to_string(), String)
                 );
-                return;
+                sleep(Duration::from_secs(1)).await;
             }
         }
     }
