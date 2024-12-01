@@ -22,6 +22,40 @@ mod tests {
     use super::*;
     use anyhow::Result;
 
+    async fn request_airdrop_with_retries(
+        rpc_client: &RpcClient,
+        pubkey: &Pubkey,
+        amount: u64,
+        max_retries: u32
+    ) -> Result<()> {
+        for attempt in 0..max_retries {
+            info!("Requesting airdrop attempt {}/{}", attempt + 1, max_retries);
+            
+            match rpc_client.request_airdrop(pubkey, amount).await {
+                Ok(sig) => {
+                    info!("Airdrop requested, signature: {}", sig);
+                    match rpc_client.confirm_transaction(&sig).await {
+                        Ok(_) => {
+                            info!("Airdrop confirmed");
+                            return Ok(());
+                        },
+                        Err(e) => {
+                            warn!("Failed to confirm airdrop: {}", e);
+                        }
+                    }
+                },
+                Err(e) => {
+                    warn!("Failed to request airdrop: {}", e);
+                }
+            }
+
+            // Wait before retrying
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+
+        Err(anyhow::anyhow!("Failed to get airdrop after {} attempts", max_retries))
+    }
+
     #[tokio::test]
     async fn test_testnet_bundle_submission() -> Result<()> {
         // Setup logging
@@ -58,13 +92,22 @@ mod tests {
         info!("Payer: {}", payer.pubkey());
         info!("Recipient: {}", recipient.pubkey());
 
-        // Check payer balance
-        let balance = rpc_client.get_balance(&payer.pubkey()).await?;
-        info!("Payer balance: {} SOL", balance as f64 / 1_000_000_000.0);
+        // Check initial balance
+        let initial_balance = rpc_client.get_balance(&payer.pubkey()).await?;
+        info!("Initial payer balance: {} SOL", initial_balance as f64 / 1_000_000_000.0);
 
-        if balance == 0 {
-            error!("Payer account needs to be funded. Please fund {} with some testnet SOL", payer.pubkey());
-            return Ok(());
+        if initial_balance == 0 {
+            info!("Requesting airdrop for payer account...");
+            request_airdrop_with_retries(&rpc_client, &payer.pubkey(), 1_000_000_000, 3).await?;
+            
+            // Verify new balance
+            let new_balance = rpc_client.get_balance(&payer.pubkey()).await?;
+            info!("New payer balance: {} SOL", new_balance as f64 / 1_000_000_000.0);
+
+            if new_balance == 0 {
+                error!("Failed to fund account. Please fund {} with some testnet SOL", payer.pubkey());
+                return Ok(());
+            }
         }
 
         // Get tip accounts from block engine
